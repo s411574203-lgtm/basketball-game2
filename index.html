@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>街頭籃球霸主 Street Hoops Vibe</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+    body {
+      background-color: #121212;
+      color: #fff;
+      font-family: 'Impact', 'Segoe UI', Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .game-container {
+      position: relative;
+      width: 800px;
+      height: 500px;
+      background: linear-gradient(135deg, #1f1c2c 0%, #928dab 100%);
+      border: 4px solid #ff5722;
+      border-radius: 12px;
+      box-shadow: 0 0 25px rgba(255, 87, 34, 0.5);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .hud {
+      position: absolute;
+      top: 15px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 24px;
+      text-shadow: 2px 2px 4px #000;
+    }
+    .hud span {
+      color: #ff9800;
+    }
+    .power-bar-container {
+      position: absolute;
+      bottom: 25px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 300px;
+      height: 24px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #fff;
+      border-radius: 12px;
+      overflow: hidden;
+      display: none;
+    }
+    .power-bar-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #4caf50, #ffeb3b, #f44336);
+    }
+    .controls {
+      position: absolute;
+      bottom: 15px;
+      right: 20px;
+    }
+    .btn {
+      background: #ff5722;
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      font-size: 20px;
+      font-family: inherit;
+      border-radius: 8px;
+      cursor: pointer;
+      box-shadow: 0 4px 0 #b23c17;
+      transition: all 0.1s ease;
+    }
+    .btn:active {
+      transform: translateY(4px);
+      box-shadow: none;
+    }
+    .overlay {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      z-index: 10;
+    }
+    .overlay h1 {
+      font-size: 52px;
+      color: #ff9800;
+      text-shadow: 3px 3px 0 #000;
+      margin-bottom: 10px;
+    }
+    .overlay p {
+      font-size: 20px;
+      margin-bottom: 20px;
+      color: #ccc;
+    }
+  </style>
+</head>
+<body>
+
+<div class="game-container">
+  <div class="hud">
+    <div>分數: <span id="score">0</span></div>
+    <div>最高分: <span id="high-score">0</span></div>
+    <div>時間: <span id="timer">60</span>s</div>
+  </div>
+
+  <canvas id="gameCanvas" width="800" height="500"></canvas>
+
+  <div class="power-bar-container" id="powerContainer">
+    <div class="power-bar-fill" id="powerFill"></div>
+  </div>
+
+  <div class="controls">
+    <button class="btn" id="shootBtn">按住蓄力 / 投籃</button>
+  </div>
+
+  <!-- 開始/結束畫面 -->
+  <div class="overlay" id="startOverlay">
+    <h1>街頭籃球霸主</h1>
+    <p>長按 [投籃按鈕] 或 [空白鍵] 蓄力，看準力道放開投籃！</p>
+    <button class="btn" id="startBtn">開始遊戲</button>
+  </div>
+</div>
+
+<script>
+  // 音效合成器 (Web Audio API)
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  function playSound(freq, duration, type='sine') {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  }
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // 遊戲狀態
+  let score = 0;
+  let highScore = localStorage.getItem('street_hoops_hi') || 0;
+  let timeLeft = 60;
+  let gameInterval = null;
+  let isPlaying = false;
+
+  document.getElementById('high-score').innerText = highScore;
+
+  // 籃球物體
+  const ball = {
+    x: 120, y: 380, radius: 18,
+    vx: 0, vy: 0,
+    isShooting: false,
+    gravity: 0.38
+  };
+
+  // 籃框與籃板位置
+  const rim = {
+    x: 640, y: 220, width: 60, height: 8,
+    direction: 1, speed: 1.5
+  };
+
+  // 蓄力狀態
+  let isPowering = false;
+  let power = 0;
+  let powerDirection = 1;
+
+  // 粒子特效
+  let particles = [];
+
+  function resetBall() {
+    ball.x = 120;
+    ball.y = 380;
+    ball.vx = 0;
+    ball.vy = 0;
+    ball.isShooting = false;
+  }
+
+  // 控制邏輯
+  const shootBtn = document.getElementById('shootBtn');
+  const powerContainer = document.getElementById('powerContainer');
+  const powerFill = document.getElementById('powerFill');
+
+  function startPower() {
+    if (!isPlaying || ball.isShooting) return;
+    isPowering = true;
+    power = 0;
+    powerDirection = 1;
+    powerContainer.style.display = 'block';
+  }
+
+  function releasePower() {
+    if (!isPlaying || !isPowering || ball.isShooting) return;
+    isPowering = false;
+    powerContainer.style.display = 'none';
+
+    // 依據力量計算發射速度
+    const shotPower = 8 + (power / 100) * 6;
+    ball.vx = shotPower * 0.72;
+    ball.vy = -shotPower * 1.1;
+    ball.isShooting = true;
+
+    playSound(300, 0.15, 'triangle');
+  }
+
+  // 事件監聽
+  shootBtn.addEventListener('mousedown', startPower);
+  shootBtn.addEventListener('mouseup', releasePower);
+  shootBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPower(); });
+  shootBtn.addEventListener('touchend', (e) => { e.preventDefault(); releasePower(); });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && !e.repeat) startPower();
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') releasePower();
+  });
+
+  // 進球爆花粒子
+  function createParticles(x, y) {
+    for (let i = 0; i < 20; i++) {
+      particles.push({
+        x: x, y: y,
+        vx: (Math.random() - 0.5) * 8,
+        vy: (Math.random() - 0.5) * 8,
+        color: ['#ffeb3b', '#ff9800', '#2196f3', '#e91e63'][Math.floor(Math.random() * 4)],
+        life: 30
+      });
+    }
+  }
+
+  // 主更新畫面的 Loop
+  function update() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 畫球場背景與塗鴉風格飾條
+    ctx.fillStyle = '#2a2a3a';
+    ctx.fillRect(0, 430, canvas.width, 70); // 地板
+    ctx.fillStyle = '#ff5722';
+    ctx.fillRect(0, 425, canvas.width, 5); // 罰球線邊界
+
+    // 動態籃框 (超過 10 分開始上下移動)
+    if (score >= 10) {
+      rim.y += rim.speed * rim.direction;
+      if (rim.y < 140 || rim.y > 280) rim.direction *= -1;
+    }
+
+    // 畫籃板與籃框
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(rim.x + rim.width, rim.y - 60, 10, 80); // 籃板
+    ctx.fillStyle = '#ff3d00';
+    ctx.fillRect(rim.x, rim.y, rim.width, rim.height); // 籃框
+
+    // 畫籃網
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(rim.x, rim.y + rim.height);
+    ctx.lineTo(rim.x + 10, rim.y + 35);
+    ctx.lineTo(rim.x + rim.width - 10, rim.y + 35);
+    ctx.lineTo(rim.x + rim.width, rim.y + rim.height);
+    ctx.stroke();
+
+    // 蓄力條動態更新
+    if (isPowering) {
+      power += 0.5 * powerDirection;
+      if (power >= 100 || power <= 0) powerDirection *= -1;
+      powerFill.style.width = power + '%';
+    }
+
+    // 籃球物理模擬
+    if (ball.isShooting) {
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+      ball.vy += ball.gravity;
+
+      // 檢查進球判定
+      if (
+        ball.x > rim.x && ball.x < rim.x + rim.width &&
+        ball.y > rim.y && ball.y < rim.y + 20 &&
+        ball.vy > 0
+      ) {
+        score += 2;
+        document.getElementById('score').innerText = score;
+        playSound(600, 0.25, 'sine');
+        createParticles(rim.x + rim.width / 2, rim.y);
+        resetBall();
+      }
+
+      // 出界重設
+      if (ball.x > canvas.width || ball.y > canvas.height) {
+        resetBall();
+      }
+    }
+
+    // 繪製籃球
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff6d00';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#000';
+    ctx.stroke();
+
+    // 更新並繪製爆花粒子
+    particles.forEach((p, index) => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life--;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, 4, 4);
+      if (p.life <= 0) particles.splice(index, 1);
+    });
+
+    requestAnimationFrame(update);
+  }
+
+  // 開始與結束控制
+  document.getElementById('startBtn').addEventListener('click', () => {
+    document.getElementById('startOverlay').style.display = 'none';
+    score = 0;
+    timeLeft = 60;
+    document.getElementById('score').innerText = score;
+    document.getElementById('timer').innerText = timeLeft;
+    isPlaying = true;
+    resetBall();
+
+    if (gameInterval) clearInterval(gameInterval);
+    gameInterval = setInterval(() => {
+      timeLeft--;
+      document.getElementById('timer').innerText = timeLeft;
+      if (timeLeft <= 0) {
+        clearInterval(gameInterval);
+        isPlaying = false;
+        playSound(150, 0.8, 'sawtooth'); // 壓哨嗶聲
+
+        if (score > highScore) {
+          highScore = score;
+          localStorage.setItem('street_hoops_hi', highScore);
+          document.getElementById('high-score').innerText = highScore;
+        }
+
+        document.getElementById('startOverlay').style.display = 'flex';
+        document.getElementById('startOverlay').querySelector('h1').innerText = '遊戲結束！';
+        document.getElementById('startOverlay').querySelector('p').innerText = `最終得分：${score} 分`;
+        document.getElementById('startBtn').innerText = '再試一次';
+      }
+    }, 1000);
+  });
+
+  update();
+</script>
+</body>
+</html>
